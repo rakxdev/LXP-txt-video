@@ -1,90 +1,96 @@
-# Docker Commands for Building and Managing the Container
+Absolutely! Here's the **complete, step-by-step command list** for each bot (A and B) — including:
 
-These commands assume you are using a `docker-compose.yml` file in the current directory.
-
----
-
-## 🛠️ Build the Image
-
-Run this command in the project directory to build the service image defined in your Compose file:
-
-```
-docker-compose build
-```
+* Going to folder
+* Creating + activating venv
+* Installing requirements
+* Starting bot in background
+* Viewing logs
+* Stopping bot safely
 
 ---
 
-## 🚀 Start the Container
+## 🅰️ Bot A (in `/home/ubuntu/A_txt-v`)
 
-Start your service in **detached mode** (runs in the background) with:
+### ✅ **1. Go to folder and set up venv**
 
-```
-docker-compose up -d
-```
-
----
-
-## 📜 View Logs
-
-To follow logs from the running services, use:
-
-```
-docker-compose logs -f
+```bash
+cd /home/ubuntu/A_txt-v
+python3 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-To follow logs for a specific service (e.g., `bot`):
+### 🚀 **2. Start Bot A in Background**
 
-```
-docker-compose logs -f bot
+```bash
+nohup python3 main.py > output.log 2>&1 &
 ```
 
 ---
 
-## 🛑 Stop and Remove the Deployment
+## 🅱️ Bot B (in `/home/ubuntu/B_txt-v`)
 
-Stop running containers and remove any networks, volumes, and images created by Compose:
+### ✅ **1. Go to folder and set up venv**
 
+```bash
+cd /home/ubuntu/B_txt-v
+python3 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
 ```
-docker-compose down --volumes --rmi all --remove-orphans
+
+### 🚀 **2. Start Bot B in Background**
+
+```bash
+nohup python3 main.py > output.log 2>&1 &
 ```
 
 ---
 
-## 🧹 Clean Up Docker Resources
+## 🔍 **Check Logs (for either bot)**
 
-Free up disk space by removing unused Docker data:
-
-```
-docker system prune -f --volumes
+```bash
+tail -f output.log
 ```
 
-### Or remove each individually:
-
-- Remove **stopped containers**:
-  ```
-  docker container prune -f
-  ```
-
-- Remove **unused images**:
-  ```
-  docker image prune -f
-  ```
-
-- Remove **unused networks**:
-  ```
-  docker network prune -f
-  ```
-
-- Remove **build cache**:
-  ```
-  docker builder prune -f
-  ```
-
-- Remove **unused volumes**:
-  ```
-  docker volume prune -f
-  ```
+> Use `Ctrl + C` to stop viewing logs (does **not** stop the bot).
 
 ---
 
-> ✅ According to Docker documentation, `docker system prune` removes all stopped containers, unused networks, dangling images, and build cache. Adding the `--volumes` flag also prunes unused volumes.
+## 🛑 **Stop Bot (A or B)**
+
+### 1. Find process ID:
+
+```bash
+ps aux | grep main.py
+```
+
+Sample output:
+
+```
+ubuntu   313424  0.5  1.2  123456  65432 pts/0    S    13:55   0:00 python3 main.py
+```
+
+### 2. Kill it by PID:
+
+```bash
+kill <PID>
+```
+
+Example:
+
+```bash
+kill 313424
+```
+
+---
+
+Let me know if you want to:
+
+* Auto-start these on reboot
+* Use a `.sh` script for starting both at once
+* Or manage them via `systemctl` again but better handled
+
+✅ You're fully set up for isolated, background bots without Docker.
