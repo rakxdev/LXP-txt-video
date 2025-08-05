@@ -1,5 +1,3 @@
----
-
 ## 🅰️ Bot A (in `/home/ubuntu/A_txt-v`)
 
 ### ✅ **1. Go to folder and set up venv**
