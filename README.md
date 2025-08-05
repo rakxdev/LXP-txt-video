@@ -9,7 +9,7 @@ These commands assume you are using a `docker-compose.yml` file in the current d
 Run this command in the project directory to build the service image defined in your Compose file:
 
 ```
-docker compose build
+docker-compose build
 ```
 
 ---
@@ -19,7 +19,7 @@ docker compose build
 Start your service in **detached mode** (runs in the background) with:
 
 ```
-docker compose up -d
+docker-compose up -d
 ```
 
 ---
@@ -29,13 +29,13 @@ docker compose up -d
 To follow logs from the running services, use:
 
 ```
-docker compose logs -f
+docker-compose logs -f
 ```
 
 To follow logs for a specific service (e.g., `bot`):
 
 ```
-docker compose logs -f bot
+docker-compose logs -f bot
 ```
 
 ---
@@ -45,7 +45,7 @@ docker compose logs -f bot
 Stop running containers and remove any networks, volumes, and images created by Compose:
 
 ```
-docker compose down --volumes --rmi all --remove-orphans
+docker-compose down --volumes --rmi all --remove-orphans
 ```
 
 ---
