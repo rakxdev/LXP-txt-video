@@ -1,12 +1,3 @@
-Absolutely! Here's the **complete, step-by-step command list** for each bot (A and B) — including:
-
-* Going to folder
-* Creating + activating venv
-* Installing requirements
-* Starting bot in background
-* Viewing logs
-* Stopping bot safely
-
 ---
 
 ## 🅰️ Bot A (in `/home/ubuntu/A_txt-v`)
