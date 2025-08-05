@@ -61,16 +61,41 @@ tail -f output.log
 
 ## 🛑 **Stop Bot (A or B)**
 
-### 1. Find process ID:
+---
+
+### 🧠 Summary: How to identify your bots
+
+If you run multiple bots with the same filename (`main.py`), use this process:
+
+1. Get all matching processes:
+
+   ```bash
+   ps aux | grep main.py
+   ```
+
+2. For each PID, check its working directory:
+
+   ```bash
+   ls -l /proc/<PID>/cwd
+   ```
+
+That will tell you exactly which bot is running from which folder.
+
+---
+
+### ✅ Optional: One-liner script to see all running bots
+
+You can use this command to list all running `main.py` bots with their folder:
 
 ```bash
-ps aux | grep main.py
+for pid in $(pgrep -f main.py); do echo -n "PID $pid → "; readlink /proc/$pid/cwd; done
 ```
 
-Sample output:
+**Example output:**
 
 ```
-ubuntu   313424  0.5  1.2  123456  65432 pts/0    S    13:55   0:00 python3 main.py
+PID 304845 → /app
+PID 306681 → /home/ubuntu/A_txt-v
 ```
 
 ### 2. Kill it by PID:
