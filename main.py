@@ -1,35 +1,22 @@
-"""
-Entry point for the Telegram bot.
-
-This module sets up a Pyrogram client and defines handlers for the /start,
-/stop and /upload commands.  It orchestrates reading a .txt file of
-links, prompting the user for additional metadata (start index, batch
-name, resolution and subject), downloading each item using yt‑dlp via
-``core.download_video``, trimming the video, and finally uploading it to
-Telegram with a rich caption.
-
-NOTE: Do not remove credit.  Telegram: @VJ_Botz, YouTube: https://youtube.com/@Tech_VJ
-"""
-
 import os
 import re
 import sys
-import time
 import asyncio
 import requests
-from subprocess import getstatusoutput
 
 from aiohttp import ClientSession
 from pyromod import listen
+from pyromod.helpers import ikb
 
 from pyrogram import Client, filters
-from pyrogram.types import Message
-from pyrogram.errors import FloodWait
+from pyrogram.types import Message, CallbackQuery
 
 import core as helper
-from utils import hrb, hrt  # noqa: F401: imported for side effects
+from utils import hrb, hrt  # noqa: F401
 from vars import API_ID, API_HASH, BOT_TOKEN
 
+# In-memory user state store
+user_state = {}
 
 # Initialize the Pyrogram bot
 bot = Client(
@@ -39,15 +26,12 @@ bot = Client(
     bot_token=BOT_TOKEN,
 )
 
-# Default thumbnail URL.  This is used automatically for all videos; the
-# user is not prompted to provide their own thumbnail.  If you wish to
-# change the default thumbnail, simply modify this constant.
+# Default thumbnail URL
 DEFAULT_THUMB_URL = "https://i.ibb.co/jkQJdwCj/th.png"
 
 
 @bot.on_message(filters.command(["start"]))
 async def start(bot: Client, m: Message):
-    """Send a welcome message with usage instructions."""
     await m.reply_text(
         f"<b>Hello {m.from_user.mention}</b>\n\n"
         "I am a bot for downloading links from your .TXT file and then uploading "
@@ -58,241 +42,183 @@ async def start(bot: Client, m: Message):
 
 
 @bot.on_message(filters.command("stop"))
-async def restart_handler(_, m: Message):
-    """Restart the bot when /stop is issued."""
+async def stop(bot: Client, m: Message):
     await m.reply_text("**Stopped**", True)
     os.execl(sys.executable, sys.executable, *sys.argv)
 
 
 @bot.on_message(filters.command(["upload"]))
 async def upload(bot: Client, m: Message):
-    """
-    Handle the /upload command.
+    # Step 1: ask for the .txt file
+    user_state[m.chat.id] = {}
+    prompt = await m.reply_text("📄 Please send me your .txt file containing the links.")
+    input_msg: Message = await bot.listen(prompt.chat.id)
 
-    This handler asks the user for a .txt file, reads the links, prompts
-    for metadata (start index, batch name, resolution and subject), and
-    then iterates over each link to download and upload it with a rich
-    caption and trimmed video.
-    """
-    # Prompt for the .txt file
-    editable = await m.reply_text("📄 Please send me your .txt file containing the links.")
-    input_msg: Message = await bot.listen(editable.chat.id)
+    caption_text = getattr(input_msg, "caption", None)
     txt_path = await input_msg.download()
     await input_msg.delete(True)
 
-    # Prepare a downloads directory (not strictly necessary but good practice)
-    path = f"./downloads/{m.chat.id}"
-    os.makedirs(path, exist_ok=True)
+    os.makedirs(f"./downloads/{m.chat.id}", exist_ok=True)
 
-    # Parse the text file
+    # Parse the text file into (name, url) pairs
     try:
         with open(txt_path, "r", encoding="utf-8") as f:
-            content = f.read().strip()
-        lines = [line for line in content.split("\n") if line.strip()]
-        links: list[list[str]] = []
+            lines = [line for line in f.read().strip().split("\n") if line.strip()]
+        links = []
         for line in lines:
-            # Split only at the first occurrence of '://'.  The part before
-            # contains the name, the part after is the URL without scheme.
-            parts = line.split("://", 1)
-            if len(parts) == 2:
-                links.append(parts)
-            else:
-                # If no scheme found, treat entire line as URL with empty name
-                links.append(["", parts[0]])
+            parts = line.rsplit(" ", 1)
+            name_part, url_full = (parts[0].strip(), parts[1].strip()) if len(parts) == 2 else ("", parts[0].strip())
+            links.append([name_part, url_full])
         os.remove(txt_path)
     except Exception:
         await m.reply_text("❌ Invalid file input.")
         os.remove(txt_path)
         return
 
-    # Ask user from which index to start downloading
-    await editable.edit(
-        f"**Tᴏᴛᴀʟ ʟɪɴᴋs ғᴏᴜɴᴅ:** <b>{len(links)}</b>\n\n"
-        "**Sᴇɴᴅ ᴛʜᴇ sᴛᴀʀᴛɪɴɢ ɪɴᴅᴇx** (1-based)",
-        disable_web_page_preview=True,
+    user_state[m.chat.id]["links"] = links
+
+    # Extract batch and subject from the caption
+    parsed_batch = parsed_subject = None
+    if caption_text:
+        for line in caption_text.splitlines():
+            cleaned = line.lstrip("📂📦📁📘📗📕📓📄🔗📝🗒️")
+            parts = cleaned.split(":", 1)
+            if len(parts) == 2:
+                key, value = parts[0].strip().lower(), parts[1].strip()
+                if "subject" in key and not parsed_subject:
+                    parsed_subject = value
+                elif "batch" in key and not parsed_batch:
+                    parsed_batch = value
+    user_state[m.chat.id]["parsed_batch"] = parsed_batch
+    user_state[m.chat.id]["parsed_subject"] = parsed_subject
+
+    # Step 2: ask for starting index (buttons: “1” and “custom”)
+    start_keyboard = ikb([["1", "custom"]])
+    msg_start = await m.reply_text(
+        f"**Total links found:** <b>{len(links)}</b>\n\nSelect the starting index:",
+        reply_markup=start_keyboard
     )
-    input_start: Message = await bot.listen(editable.chat.id)
-    raw_start = input_start.text.strip()
-    await input_start.delete(True)
-    # Validate starting index
+    # Remove the initial “send file” prompt for a cleaner UI
     try:
-        start_index = int(raw_start)
-        if start_index < 1 or start_index > len(links):
-            raise ValueError
+        await prompt.delete()
     except Exception:
-        start_index = 1
+        pass
+    user_state[m.chat.id]["msg_start"] = msg_start
 
-    # Ask for batch name
-    await editable.edit("📦 Please enter the batch name (e.g. 'Batch 1')")
-    input_batch: Message = await bot.listen(editable.chat.id)
-    batch_name = input_batch.text.strip()
-    await input_batch.delete(True)
 
-    # Ask for resolution
-    await editable.edit(
-        "Please choose a resolution (144, 240, 360, 480, 720, 1080):"
-    )
-    input_res: Message = await bot.listen(editable.chat.id)
-    raw_res = input_res.text.strip()
-    await input_res.delete(True)
-    res_map = {
-        "144": "256x144",
-        "240": "426x240",
-        "360": "640x360",
-        "480": "854x480",
-        "720": "1280x720",
-        "1080": "1920x1080",
-    }
-    # quality_label is used for display and caption (append 'p' for human‑readable)
-    # If the user enters an unsupported resolution, fall back to "UN"
-    if raw_res in res_map:
-        quality = raw_res
-        quality_label = raw_res + "p"
+@bot.on_callback_query()
+async def handle_buttons(bot: Client, cq: CallbackQuery):
+    chat_id = cq.message.chat.id
+    data = cq.data
+
+    state = user_state.get(chat_id, {})
+    links = state.get("links")
+    if not links:
+        await cq.answer("No upload session found.", show_alert=True)
+        return
+
+    # Stage 1: choosing starting index
+    if "start_index" not in state:
+        if data == "custom":
+            await cq.message.delete()
+            msg = await bot.send_message(chat_id, "📥 Please enter the starting index (1-based):")
+            resp = await bot.listen(chat_id)
+            try:
+                start_index = int(resp.text.strip())
+                if not 1 <= start_index <= len(links):
+                    raise ValueError
+            except Exception:
+                start_index = 1
+            await resp.delete(True)
+            await msg.delete()
+        else:
+            start_index = int(data)
+            await cq.message.delete()
+
+        state["start_index"] = start_index
+
+        parsed_batch = state.get("parsed_batch")
+        if parsed_batch:
+            batch_name = parsed_batch
+        else:
+            msg_batch = await bot.send_message(chat_id, "📦 Please enter the batch name (e.g. 'Batch 1')")
+            input_batch = await bot.listen(chat_id)
+            batch_name = input_batch.text.strip()
+            await input_batch.delete(True)
+            await msg_batch.delete()
+        state["batch_name"] = batch_name
+
+        # Stage 3: resolution selection
+        quality_keyboard = ikb([
+            ["144", "240", "360"],
+            ["480", "720", "1080"]
+        ])
+        msg_res = await bot.send_message(chat_id, "Please choose a resolution:", reply_markup=quality_keyboard)
+        state["msg_res"] = msg_res
     else:
-        quality = "UN"
-        quality_label = raw_res
+        # Stage 3: resolution selected
+        raw_res = data
+        await cq.message.delete()
+        res_map = {
+            "144": "256x144", "240": "426x240", "360": "640x360",
+            "480": "854x480", "720": "1280x720", "1080": "1920x1080",
+        }
+        quality = raw_res if raw_res in res_map else "UN"
+        state["quality"] = quality
+        state["quality_label"] = raw_res + "p"
 
-    # Ask for subject name
-    await editable.edit("📘 Please enter the subject name (e.g. 'Physics')")
-    input_subject: Message = await bot.listen(editable.chat.id)
-    subject_name = input_subject.text.strip()
-    await input_subject.delete(True)
+        # Stage 4: subject name (use parsed if present)
+        parsed_subject = state.get("parsed_subject")
+        if parsed_subject:
+            subject_name = parsed_subject
+        else:
+            msg_subject = await bot.send_message(chat_id, "📘 Please enter the subject name (e.g. 'Physics')")
+            input_subject = await bot.listen(chat_id)
+            subject_name = input_subject.text.strip()
+            await input_subject.delete(True)
+            await msg_subject.delete()
+        state["subject_name"] = subject_name
 
-    # Use a fixed default thumbnail for all uploads.  The user is not prompted
-    # to provide a custom thumbnail.  Download the thumbnail to a local file
-    # once per upload command.  If you wish to change the default, modify
-    # ``DEFAULT_THUMB_URL`` defined near the top of this file.
-    await editable.edit(
-        "📎 A default thumbnail will be used for all videos.",
-        disable_web_page_preview=True,
-    )
-    # Remove the informational message
-    await editable.delete()
-    # Download the default thumbnail to a local file asynchronously.  We use
-    # aiohttp to fetch the image without blocking the event loop.  If
-    # downloading fails (e.g. network error), ``thumb_path`` falls back to
-    # the remote URL so that Telegram can try to fetch the image itself.
+        # Inform about the default thumbnail and delete that notification later
+        thumb_msg = await cq.message.reply("📎 A default thumbnail will be used for all videos.")
+        await process_links(bot, cq.message, state, thumb_msg)
+
+
+async def process_links(bot: Client, m: Message, state: dict, info_msg: Message | None = None):
+    # Delete the “default thumbnail” message right away for a clean UI
+    if info_msg:
+        try:
+            await info_msg.delete()
+        except Exception:
+            pass
+
+    links = state["links"]
+    start_index = state["start_index"]
+    batch_name = state["batch_name"]
+    subject_name = state["subject_name"]
+    quality_label = state["quality_label"]
+
+    # Download default thumbnail once
     thumb_path = "thumb.jpg"
     try:
         async with ClientSession() as session:
             async with session.get(DEFAULT_THUMB_URL) as resp:
                 data = await resp.read()
-        # Write the downloaded bytes to the local file synchronously.  The file
-        # size is small (thumbnail), so this write will not noticeably block.
         with open(thumb_path, "wb") as f:
             f.write(data)
     except Exception:
         thumb_path = DEFAULT_THUMB_URL
 
-    # Process each link starting from the specified index
     count = start_index
     total_links = len(links)
-    for idx in range(start_index - 1, total_links):
-        # Extract name and URL without scheme
-        name_part, url_part = links[idx]
-        # Construct the full URL
-        url = "https://" + url_part.strip()
-        # Special cases for VisionIAS, Classplus and .mpd to .m3u8 conversion
-        if "visionias" in url:
-            async with ClientSession() as session:
-                async with session.get(
-                    url,
-                    headers={
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
-                        "Accept-Language": "en-US,en;q=0.9",
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "Pragma": "no-cache",
-                        "Referer": "http://www.visionias.in/",
-                        "Sec-Fetch-Dest": "iframe",
-                        "Sec-Fetch-Mode": "navigate",
-                        "Sec-Fetch-Site": "cross-site",
-                        "Upgrade-Insecure-Requests": "1",
-                        "User-Agent": (
-                            "Mozilla/5.0 (Linux; Android 12; RMX2121) "
-                            "AppleWebKit/537.36 (KHTML, like Gecko) "
-                            "Chrome/107.0.0.0 Mobile Safari/537.36"
-                        ),
-                        "sec-ch-ua": '"Chromium";v="107", "Not=A?Brand";v="24"',
-                        "sec-ch-ua-mobile": "?1",
-                        "sec-ch-ua-platform": '"Android"',
-                    },
-                ) as resp:
-                    text = await resp.text()
-                    try:
-                        url = re.search(r"(https://.*?playlist.m3u8.*?)\"", text).group(1)
-                    except Exception:
-                        pass
-        elif "videos.classplusapp" in url:
-            try:
-                api_resp = requests.get(
-                    f"https://api.classplusapp.com/cams/uploader/video/jw-signed-url?url={url}",
-                    headers={
-                        "x-access-token": (
-                            "eyJhbGciOiJIUzM4NCIsInR5cCI6IkpXVCJ9."
-                            "eyJpZCI6MzgzNjkyMTIsIm9yZ0lkIjoyNjA1LCJ0eXBlIjoxLCJtb2JpbGUiOiI5MTcwODI3"
-                            "NzQyODkiLCJuYW1lIjoiQWNlIiwiZW1haWwiOm51bGwsImlzRmlyc3RMb2dpbiI6dHJ1ZSwi"
-                            "ZGVmYXVsdExhbmd1YWdlIjpudWxsLCJjb3VudHJ5Q29kZSI6IklOIiwiaXNJbnRlcm5hdGlv"
-                            "bmFsIjowLCJpYXQiOjE2NDMyODE4NzcsImV4cCI6MTY0Mzg4NjY3N30.hM33P2ai6ivdzxP"
-                            "Pfm01LAd4JWv-vnrSxGXqvCirCSpUfhhofpeqyeHPxtstXwe0"
-                        ),
-                    },
-                ).json()
-                url = api_resp["url"]
-            except Exception:
-                pass
-        elif "/master.mpd" in url:
-            id_ = url.split("/")[-2]
-            url = f"https://d26g5bnklkwsh4.cloudfront.net/{id_}/master.m3u8"
 
-        # Build a safe file name from name_part; strip scheme fragments if present
-        name1 = (
-            name_part
-            .replace("\t", "")
-            .replace(":", "")
-            .replace("/", "")
-            .replace("+", "")
-            .replace("#", "")
-            .replace("|", "")
-            .replace("@", "")
-            .replace("*", "")
-            .replace(".", "")
-            .replace("https", "")
-            .replace("http", "")
-            .strip()
-        )
-        # Derive a display name for the user without any index.  If name1 is
-        # empty (e.g. when a line only contains a URL), use a generic name
-        # based on the current count.
-        display_name = name1[:60] if name1 else f"File_{count}"
-        # Create a file base for storing the downloaded file on disk.  We
-        # prefix the display name with a zero‑padded index to avoid filename
-        # collisions and to preserve ordering, but this prefix is not shown to
-        # the user.  Do not include any parentheses.
-        # Replace spaces in the file base with underscores to avoid issues with shell commands
+    for idx in range(start_index - 1, total_links):
+        name_part, url = links[idx]
+        display_name = re.sub(r"[\\/:*?\"<>|]", "", name_part).strip() or f"File_{count}"
         file_base = f"{str(count).zfill(3)}_{display_name}".replace(" ", "_")
 
-        # Format selection for yt‑dlp
-        if "youtu" in url:
-            ytf = (
-                f'b[height<={quality}][ext=mp4]/'
-                f'bv[height<={quality}][ext=mp4]+ba[ext=m4a]/'
-                f'b[ext=mp4]'
-            )
-        else:
-            ytf = (
-                f'b[height<={quality}]/'
-                f'bv[height<={quality}]+ba/'
-                f'b/bv+ba'
-            )
-        # Determine if this is a JW player link; if so, we will not pass a format
-        is_jw = "jw-prod" in url
-
         try:
-            # Display an initial message about the download.  Use the display
-            # name rather than the internal file_base so the user does not
-            # see numbering prefixes.  The dynamic progress bar will edit
-            # this message throughout the download.
+            # Show the “verifying” progress message with name, quality, and URL
             show = (
                 f"📥 <b>Verifying the Downloading… Source...</b>\n\n"
                 f"📄 <b>Name:</b> <b>{display_name}</b>\n"
@@ -300,47 +226,35 @@ async def upload(bot: Client, m: Message):
                 f"🌐 <b>URL:</b> <code>{url}</code>"
             )
             prog = await m.reply_text(show, disable_web_page_preview=True)
-            # Download the video using the dynamic download function.  It
-            # accepts the format string (ytf), file base, reply message, and display name.
+            # Download the file; helper.download_video will edit the message to show progress
             downloaded_file = await helper.download_video(
-                url,
-                ytf if not is_jw else "",
-                file_base,
-                prog,
-                display_name,
-                is_jw,
+                url, "", file_base, prog, display_name, False
             )
-            # Once download is finished, remove the progress message.  It will
-            # be replaced by the upload progress message in send_vid.
+            # Remove the progress message after download is complete
             await prog.delete(True)
-            # Upload the trimmed video with caption.  Provide the display name
-            # so the caption and progress bar omit numbering.  Use the
-            # quality_label with 'p' suffix for the caption.
+            # Upload the video with proper caption
             await helper.send_vid(
-                bot,
-                m,
-                downloaded_file,
-                thumb_path,
-                batch_name=batch_name,
-                subject_name=subject_name,
-                quality=quality_label,
-                display_name=display_name,
-                prog=prog,
+                bot, m, downloaded_file, thumb_path,
+                batch_name=batch_name, subject_name=subject_name,
+                quality=quality_label, display_name=display_name, prog=prog
             )
             count += 1
-            # Yield control briefly between uploads so the event loop can handle
-            # other tasks.  Replacing time.sleep with asyncio.sleep prevents
-            # blocking the loop and improves responsiveness.
             await asyncio.sleep(1)
         except Exception as e:
             await m.reply_text(
-                f"❌ Downloading interrupted\n{str(e)}\n"
-                f"**Name:** {display_name}\n"
-                f"**Link:** `{url}`"
+                f"❌ Downloading interrupted\n{str(e)}\nName: {display_name}\nLink: {url}"
             )
             continue
 
-    await m.reply_text("✅ All downloads complete!\n\nHit /stop \nThen /start Again.. ", disable_web_page_preview=True)
+    # Final summary message
+    await m.reply_text(
+        f"✅ All downloads complete!\n\n"
+        f"📦 Batch: <b>{batch_name}</b>\n"
+        f"📘 Subject: <b>{subject_name}</b>\n"
+        f"🔗 Total Links: <b>{total_links}</b>\n\n"
+        "Hit /stop Then /start Again..",
+        disable_web_page_preview=True
+    )
 
 
 if __name__ == "__main__":
