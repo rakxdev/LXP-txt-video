@@ -93,7 +93,10 @@ async def upload(bot: Client, m: Message):
     user_state[m.chat.id]["parsed_subject"] = parsed_subject
 
     # Step 2: ask for starting index (buttons: “1” and “custom”)
-    start_keyboard = ikb([["1", "custom"]])
+    # Each button is a (label, callback_data) tuple
+    start_keyboard = ikb([
+        [("1", "1"), ("Custom", "custom")]
+    ])
     msg_start = await m.reply_text(
         f"**Total links found:** <b>{len(links)}</b>\n\nSelect the starting index:",
         reply_markup=start_keyboard
@@ -149,9 +152,10 @@ async def handle_buttons(bot: Client, cq: CallbackQuery):
         state["batch_name"] = batch_name
 
         # Stage 3: resolution selection
+        # Each resolution button is a (label, callback_data) tuple
         quality_keyboard = ikb([
-            ["144", "240", "360"],
-            ["480", "720", "1080"]
+            [("144p", "144"), ("240p", "240"), ("360p", "360")],
+            [("480p", "480"), ("720p", "720"), ("1080p", "1080")]
         ])
         msg_res = await bot.send_message(chat_id, "Please choose a resolution:", reply_markup=quality_keyboard)
         state["msg_res"] = msg_res
