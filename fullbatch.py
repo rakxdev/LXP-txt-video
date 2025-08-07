@@ -27,13 +27,13 @@ from core import download_video, send_vid
 
 # -------------------------------------------------------------------------
 # Configuration
-API_ID = int(os.environ.get("API_ID", "24986604"))
-API_HASH = os.environ.get("API_HASH", "afda6f8e5493b9a5bc87656974f3c82e")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "7734371947:AAEu32ysTCsJJh0vExhS1dyakId-qT1aOGg")
-AUTH_STR  = os.environ.get("AUTHORIZED_USERS", "7875474866")
-AUTHORIZED_USERS: Optional[set[int]] = (
-    {int(u) for u in AUTH_STR.split(",") if u.strip().isdigit()} if AUTH_STR else None
-)
+# API_ID = int(os.environ.get("API_ID", "24986604"))
+# API_HASH = os.environ.get("API_HASH", "afda6f8e5493b9a5bc87656974f3c82e")
+# BOT_TOKEN = os.environ.get("BOT_TOKEN", "7734371947:AAEu32ysTCsJJh0vExhS1dyakId-qT1aOGg")
+# AUTH_STR  = os.environ.get("AUTHORIZED_USERS", "7875474866")
+# AUTHORIZED_USERS: Optional[set[int]] = (
+#     {int(u) for u in AUTH_STR.split(",") if u.strip().isdigit()} if AUTH_STR else None
+# )
 
 logging.basicConfig(
     level=logging.INFO,
