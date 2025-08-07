@@ -6,6 +6,8 @@
 cd /home/ubuntu/A_txt-v
 python3 -m venv venv
 source venv/bin/activate
+sudo apt update && sudo apt upgrade
+sudo apt install ffmpeg -y
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
@@ -26,6 +28,8 @@ nohup python3 main.py > output.log 2>&1 &
 cd /home/ubuntu/B_txt-v
 python3 -m venv venv
 source venv/bin/activate
+sudo apt update && sudo apt upgrade
+sudo apt install ffmpeg -y
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
