@@ -20,7 +20,7 @@ import psutil  # Added for system statistics
 class Timer:
     """A simple timer to control message update frequency."""
 
-    def __init__(self, time_between: int = 5) -> None:
+    def __init__(self, time_between: int = 3) -> None:
         self.start_time = time.time()
         self.time_between = time_between
 
@@ -68,7 +68,7 @@ def hrt(seconds: float, precision: int = 0) -> str:
     return "".join(pieces[:precision])
 
 
-# utils.py
+# shared timer to throttle edits
 timer = Timer(time_between=3)
 
 
@@ -160,4 +160,5 @@ async def progress_bar(
     try:
         await reply.edit(text, disable_web_page_preview=True)
     except FloodWait as e:
+        # Obey FloodWait by sleeping synchronously in this context
         time.sleep(e.x)
