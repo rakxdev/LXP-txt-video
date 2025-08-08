@@ -27,13 +27,13 @@ from core import download_video, send_vid
 
 # -------------------------------------------------------------------------
 # Configuration
-# API_ID = int(os.environ.get("API_ID", "24986604"))
-# API_HASH = os.environ.get("API_HASH", "afda6f8e5493b9a5bc87656974f3c82e")
-# BOT_TOKEN = os.environ.get("BOT_TOKEN", "7734371947:AAEu32ysTCsJJh0vExhS1dyakId-qT1aOGg")
-# AUTH_STR  = os.environ.get("AUTHORIZED_USERS", "7875474866")
-# AUTHORIZED_USERS: Optional[set[int]] = (
-#     {int(u) for u in AUTH_STR.split(",") if u.strip().isdigit()} if AUTH_STR else None
-# )
+API_ID = int(os.environ.get("API_ID", "24986604"))
+API_HASH = os.environ.get("API_HASH", "afda6f8e5493b9a5bc87656974f3c82e")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8163323617:AAH34RhSgBsc7FMX9o6Xa65RHqLRWfdUfgw")
+AUTH_STR  = os.environ.get("AUTHORIZED_USERS", "7875474866")
+AUTHORIZED_USERS: Optional[set[int]] = (
+    {int(u) for u in AUTH_STR.split(",") if u.strip().isdigit()} if AUTH_STR else None
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -143,23 +143,6 @@ def parse_notes(path: Path) -> Dict[str, Dict[str, Dict[str, List[Tuple[str, str
 
 def sanitize_name(name: str) -> str:
     return name.replace("/", "-").replace(":", "-").strip()
-
-def generate_notes_html(data, output_path, batch_title):
-    notes_json = {
-        subj: {
-            chap: {
-                key: [{"name": n, "url": u} for n, u in sorted(contents.get(key, []))]
-                for key in ["Notes", "DPP Notes"] if contents.get(key)
-            }
-            for chap, contents in chapters.items()
-        }
-        for subj, chapters in data.items()
-    }
-    notes_js = json.dumps(notes_json)
-    # (HTML omitted here for brevity—same as previous versions)
-    # ...
-    # For brevity, you can reuse the notes HTML generation from the previous script.
-    pass
 
 # -------------------------------------------------------------------------
 # In-memory state & tasks
@@ -464,27 +447,18 @@ async def process_downloads(trigger_msg: Message, state: dict):
                     logger.exception(f"Error processing {name}: {e}")
                     await bot.send_message(chat_id, f"❌ Error with <b>{html.escape(name)}</b>\n{str(e)}")
                     continue
-            await bot.send_message(chat_id, f"✅ Completed <b>{html.escape(subj)}</b> ({len(to_process)} files).")
+            # Pin the completed message for the subject
+            msg = await bot.send_message(chat_id, f"✅ Completed <b>{html.escape(subj)}</b> ({len(to_process)} files).")
+            try:
+                await bot.pin_chat_message(chat_id, msg.id, disable_notification=True)
+            except Exception as e:
+                logger.warning(f"Could not pin message: {e}")
         await bot.send_message(
             chat_id,
             f"🎉 All subjects finished!\n\n📦 Batch: <b>{html.escape(batch_name)}</b>\n"
             f"🔗 Total Files: <b>{total_uploaded}</b>",
             disable_web_page_preview=True
         )
-        # Send notes if all subjects selected
-        if len(subjects) == len(state.get("subject_list", [])):
-            try:
-                notes_data = parse_notes(Path(state["batch_path"]))
-                html_name = f"{sanitize_name(batch_name)}.html"
-                html_path = os.path.join("/tmp", html_name)
-                generate_notes_html(notes_data, Path(html_path), batch_name)
-                await bot.send_document(
-                    chat_id, html_path,
-                    caption=f"📝 Notes for {html.escape(batch_name)}"
-                )
-                os.remove(html_path)
-            except Exception as ex:
-                logger.exception(f"Failed to generate notes: {ex}")
     except asyncio.CancelledError:
         # Task cancelled: exit gracefully
         return
@@ -496,5 +470,3 @@ async def process_downloads(trigger_msg: Message, state: dict):
 if __name__ == "__main__":
     bot.run()
 
-
-# Final code for use success
