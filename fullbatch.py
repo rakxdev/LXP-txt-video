@@ -2,13 +2,17 @@
 """
 Unified bot with per‑subject start index (skipping earlier links),
 subject‑completion messages, default thumbnail, and fully functional /stop.
+
+• Uses your default thumbnail downloaded from DEFAULT_THUMB_URL if present.
+• Never extracts a frame from the video.
+• Respects Telegram rate limits.
+• Pins completion messages properly in channels/groups.
 """
 
 import os
-import sys  # <--- Add this at the top (right after 'import os')
+import sys
 import re
 import html
-import json
 import logging
 import asyncio
 from collections import defaultdict
@@ -21,19 +25,19 @@ from pyrogram import Client, filters
 from pyrogram.types import Message, CallbackQuery
 from pyromod.helpers import ikb
 from pyromod import listen
+from pyrogram.errors import FloodWait
 
-# import from your LXP repository
 from core import download_video, send_vid
 
 # -------------------------------------------------------------------------
 # Configuration
-API_ID = int(os.environ.get("API_ID", "24986604"))
-API_HASH = os.environ.get("API_HASH", "afda6f8e5493b9a5bc87656974f3c82e")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8163323617:AAH34RhSgBsc7FMX9o6Xa65RHqLRWfdUfgw")
-AUTH_STR  = os.environ.get("AUTHORIZED_USERS", "7875474866")
-AUTHORIZED_USERS: Optional[set[int]] = (
-    {int(u) for u in AUTH_STR.split(",") if u.strip().isdigit()} if AUTH_STR else None
-)
+# API_ID = int(os.environ.get("API_ID", "24986604"))
+# API_HASH = os.environ.get("API_HASH", "afda6f8e5493b9a5bc87656974f3c82e")
+# BOT_TOKEN = os.environ.get("BOT_TOKEN", "8163323617:AAH34RhSgBsc7FMX9o6Xa65RHqLRWfdUfgw")
+# AUTH_STR  = os.environ.get("AUTHORIZED_USERS", "7875474866")
+# AUTHORIZED_USERS: Optional[set[int]] = (
+#     {int(u) for u in AUTH_STR.split(",") if u.strip().isdigit()} if AUTH_STR else None
+# )
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,6 +53,7 @@ for lib in ["httpx", "pyrogram", "pyrogram.client", "pyrogram.connection"]:
 DEFAULT_THUMB_URL = "https://i.ibb.co/jkQJdwCj/th.png"
 
 async def get_default_thumb(path: str = "/tmp/default_thumb.jpg") -> str:
+    """Download and cache a default thumbnail if needed."""
     if os.path.exists(path):
         return path
     async with aiohttp.ClientSession() as session:
@@ -102,45 +107,6 @@ def parse_file(path: Path) -> Dict[str, Dict[str, Dict[str, List[Tuple[str, str]
                 last_dpp_video = None
     return data
 
-def parse_notes(path: Path) -> Dict[str, Dict[str, Dict[str, List[Tuple[str, str]]]]]:
-    text = path.read_text(errors="ignore")
-    data = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
-    current_subject = None
-    current_chapter = None
-    last_note = None
-    last_dpp_note = None
-    subj_pat = re.compile(r"\[SUBJECT\]\s*(.+)")
-    chap_pat = re.compile(r"\[CHAPTER\]\s*(.+)")
-    var_pat  = re.compile(r'set\s+"([^=]+)=([^"\n]+)')
-    pdf_pat  = re.compile(r'https?://[^"\s]+\.pdf')
-    for raw_line in text.splitlines():
-        line = remove_ansi(raw_line)
-        if (m := subj_pat.search(line)):
-            current_subject = m.group(1).strip()
-            current_chapter = None
-            continue
-        if (m := chap_pat.search(line)):
-            current_chapter = m.group(1).strip()
-            continue
-        if (m := var_pat.match(line)):
-            var_name = m.group(1).strip().lower()
-            var_val  = m.group(2).strip()
-            if var_name.startswith("note") and not var_name.startswith("note_name"):
-                last_note = var_val
-            elif var_name.startswith("dpp_note"):
-                last_dpp_note = var_val
-            continue
-        if (m := pdf_pat.search(raw_line)):
-            url = m.group(0).strip()
-            if current_subject and current_chapter:
-                if last_note:
-                    data[current_subject][current_chapter]["Notes"].append((last_note, url))
-                    last_note = None
-                elif last_dpp_note:
-                    data[current_subject][current_chapter]["DPP Notes"].append((last_dpp_note, url))
-                    last_dpp_note = None
-    return data
-
 def sanitize_name(name: str) -> str:
     return name.replace("/", "-").replace(":", "-").strip()
 
@@ -150,7 +116,6 @@ user_state: dict[int, dict] = {}
 download_tasks: dict[int, asyncio.Task] = {}
 
 def build_subject_keyboard(subjects: List[str], selected: set) -> List[List[Tuple[str, str]]]:
-    """Construct the inline keyboard for subject selection."""
     keyboard: List[List[Tuple[str, str]]] = []
     for idx, name in enumerate(subjects):
         prefix = "✅ " if name in selected else ""
@@ -167,8 +132,18 @@ def count_links(data, subject):
     )
 
 async def ensure_authorized(msg: Message) -> bool:
+    """Check if the user or channel is authorised to use the bot."""
+    # If no auth list defined, allow everyone
     if AUTHORIZED_USERS is None:
         return True
+
+    # Allow posts that originate from channels (pure channel or forwarded)
+    # In channel posts, msg.chat.type == 'channel' and msg.sender_chat is the channel.
+    # In forwarded channel posts, msg.chat.type may be 'supergroup' but msg.sender_chat is still set.
+    if msg.chat.type == "channel" or msg.sender_chat:
+        return True
+
+    # Otherwise, check the user ID
     uid = msg.from_user.id if msg.from_user else 0
     if uid not in AUTHORIZED_USERS:
         await msg.reply_text("❌ Sorry, you are not authorised to use this bot.")
@@ -180,7 +155,7 @@ async def ensure_authorized(msg: Message) -> bool:
 bot = Client("custom_index_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # -------------------------------------------------------------------------
-# Start & Stop commands
+# Commands
 
 @bot.on_message(filters.command("start"))
 async def start_cmd(_, m: Message):
@@ -316,7 +291,6 @@ async def handle_button(_, cq: CallbackQuery):
                 subj_iter.pop(0)
                 await cq.message.delete()
             elif choice == "custom":
-                # ask for custom index via reply/listen
                 await cq.message.delete()
                 prompt = await bot.send_message(
                     chat_id,
@@ -377,8 +351,12 @@ async def handle_button(_, cq: CallbackQuery):
 # -------------------------------------------------------------------------
 # Download logic
 
+MESSAGE_DELAY_PRIVATE = 1.1
+MESSAGE_DELAY_GROUP   = 3.1
+
 async def process_downloads(trigger_msg: Message, state: dict):
     chat_id = trigger_msg.chat.id
+    chat_type = trigger_msg.chat.type
     try:
         data = state["data"]
         subjects = list(state["selected_subjects"])
@@ -387,16 +365,11 @@ async def process_downloads(trigger_msg: Message, state: dict):
         batch_name = state.get("batch_title", "Batch")
         quality_label = f"{res}p"
         subject_links: Dict[str, List[Tuple[str, str]]] = {}
-        # Build lists per subject and add chapter prefixes
         for subj in subjects:
             items = []
             for chap_name, contents in data[subj].items():
                 m = re.search(r"\d+", chap_name)
-                if m:
-                    num = m.group().zfill(2)
-                    prefix = f"CH {num} "
-                else:
-                    prefix = ""
+                prefix = f"CH {m.group().zfill(2)} " if m else ""
                 for name, url in sorted(contents.get("Lectures", []), key=lambda x: x[0]):
                     items.append((prefix + name, url))
                 for name, url in sorted(contents.get("DPP Videos", []), key=lambda x: x[0]):
@@ -404,63 +377,105 @@ async def process_downloads(trigger_msg: Message, state: dict):
             subject_links[subj] = items
         thumb_path = await get_default_thumb()
         total_uploaded = 0
+
         for subj in subjects:
             links = subject_links[subj]
             start_idx = start_indexes.get(subj, 1)
-            # Skip earlier links based on start index
             to_process = links[start_idx - 1:] if start_idx > 1 else links
             count = start_idx
             for name, url in to_process:
                 if state.get("cancel"):
                     await bot.send_message(chat_id, "⛔️ Operation cancelled.")
                     return
-                safe = re.sub(r'[\\\\/:*?"<>|]', "", name).strip() or f"File_{count}"
+                safe = re.sub(r'[\\/:*?"<>|]', "", name).strip() or f"File_{count}"
                 file_base = f"{str(count).zfill(3)}_{safe}".replace(" ", "_")
+                progress_msg: Optional[Message] = None
                 try:
-                    info = await bot.send_message(
+                    progress_msg = await bot.send_message(
                         chat_id,
-                        "📥 <b>Verifying…</b>\n\n"
-                        f"📄 <b>Name:</b> <b>{html.escape(name)}</b>\n"
+                        f"📥 <b>Downloading:</b> <b>{html.escape(name)}</b>\n"
                         f"🔰 <b>Quality:</b> <i>{quality_label}</i>\n\n"
                         f"🌐 <b>URL:</b> <code>{html.escape(url)}</code>",
-                        disable_web_page_preview=True
+                        disable_web_page_preview=True,
                     )
-                    downloaded = await download_video(url, "", file_base, info, name, False)
-                    await info.delete()
+
+                    downloaded = await download_video(url, "", file_base, progress_msg, name, False)
+
+                    await progress_msg.edit(
+                        f"🚀 <b>Uploading:</b> <b>{html.escape(name)}</b>\n"
+                        f"🔰 <b>Quality:</b> <i>{quality_label}</i>",
+                        disable_web_page_preview=True,
+                    )
+
+                    # Only use thumbnail if it exists; otherwise send without
+                    thumb_to_use = thumb_path if os.path.exists(thumb_path) else "no"
                     await send_vid(
                         bot,
                         trigger_msg,
                         downloaded,
-                        thumb_path,
+                        thumb_to_use,
                         batch_name,
                         subj,
                         quality_label,
                         name,
-                        None
+                        progress_msg,
                     )
+
+                    await progress_msg.delete()
+
                     count += 1
                     total_uploaded += 1
-                    await asyncio.sleep(1)
+                    delay = (
+                        MESSAGE_DELAY_GROUP
+                        if chat_type in ("supergroup", "group", "channel")
+                        else MESSAGE_DELAY_PRIVATE
+                    )
+                    await asyncio.sleep(delay)
+
+                except FloodWait as e:
+                    await asyncio.sleep(e.value + 1)
+                    continue
+
                 except asyncio.CancelledError:
                     return
+
                 except Exception as e:
                     logger.exception(f"Error processing {name}: {e}")
-                    await bot.send_message(chat_id, f"❌ Error with <b>{html.escape(name)}</b>\n{str(e)}")
+                    await bot.send_message(
+                        chat_id,
+                        f"❌ Error with <b>{html.escape(name)}</b>\n{str(e)}",
+                        disable_web_page_preview=True,
+                    )
+                    try:
+                        if progress_msg:
+                            await progress_msg.delete()
+                    except Exception:
+                        pass
                     continue
-            # Pin the completed message for the subject
-            msg = await bot.send_message(chat_id, f"✅ Completed <b>{html.escape(subj)}</b> ({len(to_process)} files).")
-            try:
-                await bot.pin_chat_message(chat_id, msg.id, disable_notification=True)
-            except Exception as e:
-                logger.warning(f"Could not pin message: {e}")
+
+            comp_msg = await bot.send_message(
+                chat_id,
+                f"✅ Completed <b>{html.escape(subj)}</b> ({len(to_process)} files).",
+                disable_web_page_preview=True,
+            )
+
+            if chat_type in ("supergroup", "group", "channel"):
+                try:
+                    # Pin so users see the completion for each subject
+                    await bot.pin_chat_message(chat_id, comp_msg.id)
+                except FloodWait as e:
+                    await asyncio.sleep(e.value + 1)
+                except Exception as e:
+                    logger.warning(f"Could not pin message: {e}")
+
         await bot.send_message(
             chat_id,
             f"🎉 All subjects finished!\n\n📦 Batch: <b>{html.escape(batch_name)}</b>\n"
             f"🔗 Total Files: <b>{total_uploaded}</b>",
-            disable_web_page_preview=True
+            disable_web_page_preview=True,
         )
+
     except asyncio.CancelledError:
-        # Task cancelled: exit gracefully
         return
     finally:
         download_tasks.pop(chat_id, None)
@@ -469,4 +484,3 @@ async def process_downloads(trigger_msg: Message, state: dict):
 # -------------------------------------------------------------------------
 if __name__ == "__main__":
     bot.run()
-
